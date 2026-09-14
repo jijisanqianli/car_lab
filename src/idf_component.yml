@@ -1,0 +1,3 @@
+## selftest 所有测试项用到的第三方托管组件集中声明在这里
+dependencies:
+  espressif/led_strip: "^3.0.3"

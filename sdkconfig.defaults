@@ -1,0 +1,6 @@
+; 与主项目 (advanced_embedded_smart_car_project) 同款: ESP32-S3-DevKitC-1 N16R8
+; 主项目配置有改动时, 同步这里的对应行
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
