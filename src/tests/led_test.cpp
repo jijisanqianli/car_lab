@@ -42,6 +42,9 @@ void test_led()
         step = (step + 1) % 4;
     }
 
+    // 把led重置为关
+    led_strip_clear(strip);
+
     led_strip_del(strip); /* 释放 RMT 资源, 保证测试可重复进入 */
     ESP_LOGI(TAG, "led test exited");
 }
