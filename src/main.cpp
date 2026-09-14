@@ -7,10 +7,12 @@
 
 extern void test_template();
 extern void test_led();
+extern void FreeRTOS_led_test();
 
 static const TestCase kTests[] = {
     {"模板测试(计数心跳)", test_template, false},
     {"LED 心跳(WS2812)",   test_led,      false},
+    {"FreeRTOS LED 心跳",   FreeRTOS_led_test, false},
     // {"电机空载", test_motor, true},  // 危险项示例: need_confirm=true, 启动前需按 y
 };
 static constexpr int kTestCount = sizeof(kTests) / sizeof(kTests[0]);

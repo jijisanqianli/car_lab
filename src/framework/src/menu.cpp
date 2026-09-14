@@ -89,7 +89,7 @@ void menu_run(const TestCase* tests, int count)
         TaskHandle_t task = nullptr;
         // 创建任务
         if (xTaskCreate(test_trampoline, "test", 4096,
-                        const_cast<TestCase*>(&tc), 5, &task) != pdTRUE) {
+                        const_cast<TestCase*>(&tc), 6, &task) != pdTRUE) {
             printf("任务创建失败\n");
             continue;
         }
