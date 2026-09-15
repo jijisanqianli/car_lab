@@ -1,18 +1,26 @@
 #include <driver/gpio.h>
+#include <atomic>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+struct task_arg_t {
+    QueueHandle_t queue;
+    std::atomic<int> deleted;
+};
+
+extern bool test_should_abort();
+
 static QueueHandle_t isr_queue = nullptr;
-static int periods[4] = {500, 200, 100, 1000};
+static TickType_t periods[4] = {500, 200, 100, 1000};
 static gpio_num_t button_pin = GPIO_NUM_0;
 
 static void gpio_isr_handler(void *arg) {
-    uint32_t gpio_num = uint32_t(arg);                 //哪个引脚触发
+    uint32_t gpio_num = reinterpret_cast<uint32_t>(arg);                 //哪个引脚触发
     xQueueOverwriteFromISR(isr_queue, &gpio_num, nullptr);  //从中断里向队列覆盖一个数据
 }
 
-void button_input_teardown() {
+static void button_input_teardown() {
     gpio_isr_handler_remove(button_pin);
     if (isr_queue) { vQueueDelete(isr_queue); isr_queue = nullptr; }
 }
@@ -21,7 +29,8 @@ void button_input_teardown() {
 void button_input_task(void *pvParameter) {
     // 任务初始化
     // 队列初始化
-    QueueHandle_t* led_queue = static_cast<QueueHandle_t*>(pvParameter); // 获取led间传输队列
+    task_arg_t* task_args = static_cast<task_arg_t*>(pvParameter);
+    QueueHandle_t led_queue = task_args->queue; // 获取led间传输队列
     isr_queue = xQueueCreate(1,sizeof(uint32_t));
     // 按键输入gpio配置
     gpio_config_t io_conf = {};
@@ -36,14 +45,18 @@ void button_input_task(void *pvParameter) {
     // 任务主体
     uint32_t gpio_num;
     int index = 0;
-    while (true) {
-        if (xQueueReceive(isr_queue, &gpio_num, portMAX_DELAY)) {
+    while (!test_should_abort()) {
+        if (xQueueReceive(isr_queue, &gpio_num, pdMS_TO_TICKS(100))) {
             vTaskDelay(pdMS_TO_TICKS(20));       // 防抖，跳过抖动期
             if (gpio_get_level(button_pin) == 1) { // 不是抖动
                 index = index % 4;
-                int period = periods[index++];
-                xQueueSend(*led_queue,&period,0);
+                TickType_t period = periods[index++];
+                xQueueSend(led_queue,&period,0);
             }
         }
     }
+    // 清理阶段
+    button_input_teardown();
+    task_args->deleted.fetch_add(1);
+    vTaskDelete(nullptr);
 }
