@@ -1,8 +1,18 @@
+# 构建产物
 .pio/
+
+# IDE 目录：.idea = CLion，.vscode = VS Code
+# 注意 .vscode 里的 c_cpp_properties.json / launch.json 含本机绝对路径，不能进 git
 .idea/
+.vscode/
+
+# VS Code 的 CMake Tools 扩展误建的本地构建目录
+# 本项目是 ESP-IDF 交叉编译工程，这份用本机 MinGW 编译器生成的构建树没有意义
+build/
+
 managed_components/
 
-; 每个 env 各自生成的 sdkconfig 和依赖锁属于个人工作文件, 不提交
+# 每个 env 各自生成的 sdkconfig 和依赖锁属于个人工作文件, 不提交
 sdkconfig.lab-*
 sdkconfig.old
 dependencies.lock
