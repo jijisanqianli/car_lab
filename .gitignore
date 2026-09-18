@@ -16,3 +16,6 @@ managed_components/
 sdkconfig.lab-*
 sdkconfig.old
 dependencies.lock
+
+# 个人调试小工具(如串口观察脚本), 不随仓库分发
+tools/
