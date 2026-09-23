@@ -24,8 +24,9 @@
  *   4. 呼吸开始；按 x 停止并回菜单
  *   5. 调节奏：改下方 BREATH_STEP_MS / BREATH_DUTY_STEP 两个常量
  *      单程时长(ms) ≈ 1023 / DUTY_STEP × STEP_MS
- *      嫌慢：STEP_MS 不变、DUTY_STEP 调大（如 4 → 单程 1.3s）
- *      嫌糙：DUTY_STEP 调 1（单程 5.1s，最细腻）
+ *      嫌慢：STEP_MS 不变、DUTY_STEP 调大（如 8 → 单程 1.3s）
+ *      嫌糙：DUTY_STEP 调 1（单程 10.2s，最细腻）
+ *      ⚠ STEP_MS 最低 10（tick 率 100Hz 的粒度下限，见"核心知识点三"）
  *
  * 【核心知识点一：参数有依据（必查项①，答辩要看这段注释）】
  *   LEDC 约束：2^分辨率 × PWM频率 ≤ 时钟源 80MHz
@@ -39,6 +40,13 @@
  *   ledc_update_duty() 才让它在下一个 PWM 周期生效。
  *   漏 update = 参数改了但永远不输出——AI 和初学者最常见遗漏，
  *   也是第 2 课"改了占空比没反应"的头号嫌疑。
+ *
+ * 【核心知识点三：延时粒度 = 1 tick（本实验真实翻车记录）】
+ *   ESP-IDF 默认 CONFIG_FREERTOS_HZ=100 → 1 tick = 10ms。
+ *   pdMS_TO_TICKS(5) 截断为 0，而 vTaskDelay(0) 按文档"立即返回不让出 CPU"
+ *   → 循环全速空转 → IDLE 任务饿死 → 5 秒后 task watchdog 复位。
+ *   教训：任何 <10ms 的"延时"在这个系统里都是空操作；要么参数 ≥10ms，
+ *   要么加 max(1, ticks) 护栏（本文件两处都做了）。
  * ========================================================================== */
 
 #include "driver/gpio.h"   // gpio_num_t 类型（IDF6 的 ledc.h 不再间接带入，必须显式包含）
@@ -58,11 +66,12 @@ static const char* TAG = "ledc-breath";  // 日志标签，串口按此过滤本
 
 // 输出引脚：GPIO17 = 引脚分配表的 PWMA（TB6612 的 A 路调速脚）。
 // 现在插 LED 验证链路，第 2 课把杜邦线从 LED 挪到 TB6612 的 PWMA 脚即可，代码零改动。
-static constexpr gpio_num_t BREATH_PIN = GPIO_NUM_17;
+static constexpr gpio_num_t BREATH_PIN = GPIO_NUM_13;
 
 // LEDC 分 LOW/HIGH 两组独立的 timer+channel。本实验全用 LOW_SPEED。
 // ⚠ 必查项④：timer 和 channel 的 speed_mode 必须同档！一个 LOW 一个 HIGH
 //   的后果：不报错、不崩溃，就是没输出——最隐蔽的坑。
+// 不同mode直接对应不同的硬件，是完全独立的两套ledc
 static constexpr ledc_mode_t BREATH_MODE = LEDC_LOW_SPEED_MODE;
 
 // TIMER：硬件"节拍发生器"，决定 PWM 频率。一个 timer 可带多个 channel，
@@ -73,19 +82,24 @@ static constexpr ledc_timer_t BREATH_TIMER = LEDC_TIMER_0;
 // 从所属 timer 借节拍、自己决定"高电平占多宽"。
 static constexpr ledc_channel_t BREATH_CH = LEDC_CHANNEL_0;
 
+// 开关进行打开关闭的频率，要保证够高使得灯不闪烁，电机无啸叫声音
 static constexpr uint32_t BREATH_FREQ_HZ = 20000;                 // 20kHz，理由见文件头
+// 就是档位有多少，越大调节的越细腻，渐变感更强，颗粒感更弱
 static constexpr ledc_timer_bit_t BREATH_RES = LEDC_TIMER_10_BIT; // 10 位分辨率
 
 // 占空比满量程：10bit → 取值范围 0~1023。写成 (1<<10)-1 而不是硬编码 1023，
 // 将来分辨率改成 12bit 时这一行自动跟着变，不会漏改。
-static constexpr uint32_t BREATH_DUTY_MAX = (1u << 10) - 1;
+static constexpr uint32_t BREATH_DUTY_MAX = (1u << BREATH_RES) - 1;
 
 /* ---------------------------------------------------------------------------
  * 呼吸节奏区：单程时长(ms) ≈ BREATH_DUTY_MAX / BREATH_DUTY_STEP × BREATH_STEP_MS
- * 当前：1023/2 × 5ms ≈ 2.5s 单程，全周期约 5s
+ * 当前：1023/4 × 10ms ≈ 2.5s 单程，全周期约 5s
+ * ⚠ BREATH_STEP_MS 不得小于 10ms：本系统 tick 率 100Hz(1 tick=10ms)，
+ *   更小的值会被 pdMS_TO_TICKS 截断成 0 → vTaskDelay(0) 不让出 CPU → 空转
+ *   → 5 秒后 task watchdog 复位（本实验真实踩过，见下方循环内注释）
  * ------------------------------------------------------------------------- */
-static constexpr uint32_t BREATH_STEP_MS   = 5;  // 每步间隔；也决定按 x 后的最大响应延迟
-static constexpr uint32_t BREATH_DUTY_STEP = 2;  // 每步占空比增量（1=最细腻最慢，4=快而略糙）
+static constexpr uint32_t BREATH_STEP_MS   = 10; // 每步间隔(=1 tick 下限)；也决定 x 响应延迟
+static constexpr uint32_t BREATH_DUTY_STEP = 4;  // 每步占空比增量（1=最细腻最慢, 8=快而略糙）
 
 /* ---------------------------------------------------------------------------
  * P10 三步之①②：配置 timer（节拍）+ channel（引脚+占空比发生器）
@@ -125,6 +139,7 @@ void test_ledc_breathing()
     breath_pwm_init();
     ESP_LOGI(TAG, "呼吸灯启动 (GPIO%d, 20kHz/10bit), 按 x 退出", BREATH_PIN);
 
+    // 档位
     int duty = 0;   // ⚠ 用有符号 int 而非 uint32_t：
                     //   无符号数在 duty=0/1 时执行 duty-2 会回绕成 ~42 亿，
                     //   下一行"越界夹紧"会把它钳到 1023——灯跳最亮而不是折返。
@@ -149,8 +164,11 @@ void test_ledc_breathing()
             dir = 1;                                   // 转为渐亮
         }
 
-        // ---- 阻塞 5ms：让出 CPU（框架规矩：绝不空转）；也是呼吸的"帧率" ----
-        vTaskDelay(pdMS_TO_TICKS(BREATH_STEP_MS));
+        // ---- 阻塞让出 CPU：这是本任务唯一的"呼吸帧率"来源 ----
+        // 护栏：tick 率 100Hz 下不足 10ms 会算成 0 tick，vTaskDelay(0) = 不让出
+        // → 空转饿死 IDLE → task watchdog 5 秒复位。取 max(1, ticks) 兜底。
+        TickType_t ticks = pdMS_TO_TICKS(BREATH_STEP_MS);
+        vTaskDelay(ticks > 0 ? ticks : 1);
     }
 
     // ---- 清理（可重入合同）：停掉通道并固定输出 0 = 灯灭 ----
