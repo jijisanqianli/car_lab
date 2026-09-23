@@ -10,14 +10,18 @@
  *   LED 是低风险负载：接错不炸东西、现象肉眼可见。先用它把链路验证通，
  *   以后"电机不转"就能立刻排除"PWM 本身没配对"这个嫌疑，缩小排查范围。
  *   （对照手册 §10 故障树：电机不转的头号原因是 STBY，第二才是 PWM 链路）
+ *   ⚠ 边界说明：本实验台 LED 插在 GPIO13（沿用上个实验接线，省事）。
+ *   它验证的是 timer/channel/软件循环这一段；**上车接电机前，须把本测试
+ *   在真实 PWMA=GPIO17 上再跑一遍**，否则"引脚+排针+杜邦线"最后一环未验证，
+ *   故障解耦链在引脚处断掉。引脚表的法律效力针对整车，不禁止实验台便利。
  *
  * 【验收标准】
- *   □ 亮度平滑渐变、无台阶闪烁（1024 级 × 每步 2 级增量，肉眼无台阶）
+ *   □ 亮度平滑渐变、无台阶闪烁（1024 级 × 每步 4 级增量，肉眼无台阶）
  *   □ 按 x 退出后灯灭；再次进入从全暗重新开始（可重入）
- *   □ 量化证据：duty=512 时万用表直流档量 GPIO17 ≈ 3.3V×512/1024 ≈ 1.65V
+ *   □ 量化证据：duty=512 时万用表直流档量 GPIO13 ≈ 3.3V×512/1024 ≈ 1.65V
  *
  * 【使用方法】
- *   1. 接线：LED 正极(长脚) → GPIO17；LED 负极(短脚) → 220Ω~1kΩ 电阻 → GND
+ *   1. 接线：LED 正极(长脚) → GPIO13；LED 负极(短脚) → 220Ω~1kΩ 电阻 → GND
  *      ⚠ 开发板与外部供电必须共地（手册重要前提第一条）
  *   2. 烧录：pio run -t upload（或 CLion 的 Upload 按钮）
  *   3. 看串口：pio device monitor → 菜单选 "4. LEDC 呼吸灯"
@@ -64,14 +68,17 @@ static const char* TAG = "ledc-breath";  // 日志标签，串口按此过滤本
  * 这是引脚表"法律效力"精神的延伸。
  * ------------------------------------------------------------------------- */
 
-// 输出引脚：GPIO17 = 引脚分配表的 PWMA（TB6612 的 A 路调速脚）。
-// 现在插 LED 验证链路，第 2 课把杜邦线从 LED 挪到 TB6612 的 PWMA 脚即可，代码零改动。
+// 输出引脚：实验台用 GPIO13——与上个实验(FreeRTOS_led_test)共用同一根 LED 接线，
+// 换测试不换线。注意这不是引脚表里的 PWMA(=GPIO17)：台架验证软件+LEDC 链路够用，
+// 上车前须在 G17 上重跑一遍本测试补全"引脚到最后一段"的验证（见文件头边界说明）。
 static constexpr gpio_num_t BREATH_PIN = GPIO_NUM_13;
 
-// LEDC 分 LOW/HIGH 两组独立的 timer+channel。本实验全用 LOW_SPEED。
-// ⚠ 必查项④：timer 和 channel 的 speed_mode 必须同档！一个 LOW 一个 HIGH
-//   的后果：不报错、不崩溃，就是没输出——最隐蔽的坑。
-// 不同mode直接对应不同的硬件，是完全独立的两套ledc
+// speed_mode：**经典 ESP32** 才有 LOW/HIGH 两组完全独立的硬件；
+// 我们的 ESP32-S3 实测只有一组——证据：S3 的 soc_caps.h 没有
+// SOC_LEDC_SUPPORT_HS_MODE（经典 ESP32 有），且 ledc_types.h 里
+// LEDC_HIGH_SPEED_MODE 枚举被 #if 条件编译挡掉，S3 上写了直接编译报错。
+// 所以"S3 上 LOW/HIGH 混搭静默无输出"这个坑不存在（编译期就拦下）；
+// 课程必查项④是经典 ESP32 场景，换芯片移植代码时这条会复活。
 static constexpr ledc_mode_t BREATH_MODE = LEDC_LOW_SPEED_MODE;
 
 // TIMER：硬件"节拍发生器"，决定 PWM 频率。一个 timer 可带多个 channel，
@@ -87,8 +94,8 @@ static constexpr uint32_t BREATH_FREQ_HZ = 20000;                 // 20kHz，理
 // 就是档位有多少，越大调节的越细腻，渐变感更强，颗粒感更弱
 static constexpr ledc_timer_bit_t BREATH_RES = LEDC_TIMER_10_BIT; // 10 位分辨率
 
-// 占空比满量程：10bit → 取值范围 0~1023。写成 (1<<10)-1 而不是硬编码 1023，
-// 将来分辨率改成 12bit 时这一行自动跟着变，不会漏改。
+// 占空比满量程：由 BREATH_RES 推导——(1<<10)-1 = 1023（10 个 1）。
+// 改分辨率（如 12bit）时这一行自动跟随，杜绝"两处数字对不上"的双源漂移。
 static constexpr uint32_t BREATH_DUTY_MAX = (1u << BREATH_RES) - 1;
 
 /* ---------------------------------------------------------------------------
@@ -122,7 +129,7 @@ static void breath_pwm_init()
     // ---- 第二步 ledc_channel_config：通道绑引脚 ----
     ledc_channel_config_t ch_conf = {};
     ch_conf.gpio_num   = BREATH_PIN;
-    ch_conf.speed_mode = BREATH_MODE;      // 与 timer 同档（必查项④，不一致=静默无输出）
+    ch_conf.speed_mode = BREATH_MODE;      // 与 timer 同 mode（S3 只有 LOW 一档，见上方考证）
     ch_conf.channel    = BREATH_CH;
     ch_conf.timer_sel  = BREATH_TIMER;     // 声明"我挂在哪台节拍器上"
     ch_conf.duty       = 0;                // 初始全暗，呼吸从亮起来
@@ -141,12 +148,12 @@ void test_ledc_breathing()
 
     // 档位
     int duty = 0;   // ⚠ 用有符号 int 而非 uint32_t：
-                    //   无符号数在 duty=0/1 时执行 duty-2 会回绕成 ~42 亿，
+                    //   无符号数在 duty=0/1 时执行 duty-4 会回绕成 ~42 亿，
                     //   下一行"越界夹紧"会把它钳到 1023——灯跳最亮而不是折返。
                     //   有符号数在 0 处减出负数，被 duty<=0 正常捕获折返。
     int dir = 1;    // 呼吸方向：+1 渐亮，-1 渐暗，到两端折返（三角波）
 
-    while (!test_should_abort()) {   // 每步开头查中止标志（框架合同，5ms 内响应）
+    while (!test_should_abort()) {   // 每步开头查中止标志（框架合同，10ms 内响应）
 
         // ---- 必查项②：set 写影子寄存器，update 才生效，两句必须成对出现 ----
         ledc_set_duty(BREATH_MODE, BREATH_CH, static_cast<uint32_t>(duty));
