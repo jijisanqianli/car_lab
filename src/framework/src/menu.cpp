@@ -75,13 +75,16 @@ void menu_run(const TestCase* tests, int count)
         }
         const TestCase& tc = tests[idx];
         if (tc.need_confirm) {
-            printf("该项有风险(可能使小车运动). 确认安全后按 y 开始, 其他键取消: ");
+            // 行式确认(与选择同一把钥匙): 若用单字符 read_key, 会被选择时
+            // 残留的换行字节抢先喂进——"按 y 开始"永远读到一个 \n 而误取消
+            char conf[8];
+            printf("该项有风险(可能使小车运动). 确认安全后输入 y 回车开始, 其他任意输入取消: ");
             fflush(stdout);
-            if (console_read_key() != 'y') {
+            console_read_line(conf, sizeof(conf));
+            if (conf[0] != 'y' || conf[1] != '\0') {
                 printf("已取消\n");
                 continue;
             }
-            printf("\n");
         }
         printf(">>> 运行 [%s], 按 x 返回菜单 <<<\n", tc.name);
         // 重置标记
