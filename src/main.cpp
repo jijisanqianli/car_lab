@@ -10,6 +10,8 @@ extern void test_led();
 extern void FreeRTOS_led_test();
 extern void test_ledc_breathing();
 extern void test_motor();
+extern void test_motor_cases();
+extern void test_motor_hold();
 
 static const TestCase kTests[] = {
     {"模板测试(计数心跳)", test_template, false},
@@ -17,6 +19,8 @@ static const TestCase kTests[] = {
     {"FreeRTOS LED 心跳",   FreeRTOS_led_test, false},
     {"LEDC 呼吸灯",         test_ledc_breathing, false},
     {"电机三动作(架空!)",   test_motor,    true},   // 危险项: 启动前需按 y 确认
+    {"电机八发用例(架空!)", test_motor_cases, true},
+    {"电机持续转·测转速(架空!)", test_motor_hold, true},
 };
 static constexpr int kTestCount = sizeof(kTests) / sizeof(kTests[0]);
 

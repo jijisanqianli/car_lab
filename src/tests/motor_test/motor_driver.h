@@ -6,7 +6,9 @@
 // 注意: 本函数结尾必须拉高 STBY(真值表: STBY=0 全输出关断)——靶标B必查项①
 void motor_init(void);
 
-// 带符号速度接口: motor 0=左(A路) 1=右(B路); duty ∈ [-1,1], 正=正转 负=反转 0=滑行停
+// 带符号速度接口: motor 0=左(A路) 1=右(B路); duty ∈ [-1,1], 正=正转 负=反转
+// duty=0 语义: IN1=1/IN2=0 且 PWM 恒低 → 真值表"短接制动"(捏轮反向拖动吃力)
+//              需要高阻滑行请显式调 motor_coast()
 // 必查项: ② set_duty 后 update_duty ③ duty 夹限 [-1,1]
 void motor_set(int motor, float duty);
 
