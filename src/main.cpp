@@ -15,6 +15,7 @@ extern void test_motor_hold();
 extern void test_imu_attitude();
 extern void test_imu_drift();
 extern void test_imu_drift_cal();
+extern void test_imu_alpha_cmp();
 
 static const TestCase kTests[] = {
     {"模板测试(计数心跳)", test_template, false},
@@ -27,6 +28,7 @@ static const TestCase kTests[] = {
     {"IMU 姿态(校准+互补滤波)", test_imu_attitude, false},
     {"IMU 漂移·校准前(不校准,10min)", test_imu_drift, false},
     {"IMU 漂移·校准后(10min)", test_imu_drift_cal, false},
+    {"IMU α三档对比(3min)", test_imu_alpha_cmp, false},
 };
 static constexpr int kTestCount = sizeof(kTests) / sizeof(kTests[0]);
 

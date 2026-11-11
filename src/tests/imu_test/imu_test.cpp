@@ -173,3 +173,84 @@ static void drift_session(const char* label, bool calibrate)
 
 void test_imu_drift()      { drift_session("校准前", false); }
 void test_imu_drift_cal()  { drift_session("校准后", true); }
+
+/* ============================================================================
+ * 测试项: α 三档并流对比（1.20/1.21 · 实验 5-3，一次烧录收齐三档）
+ * ----------------------------------------------------------------------------
+ * 同一帧原始数据同时喂 α=0.5 / 0.98 / 0.999 三个滤波状态（imu_filter_step 的
+ * alpha 本就是参数——核心零改动，这是当初显式传参的收益）：
+ *   前 30 s 静置 → 自动打三档 pitch/roll 噪声峰峰（★行）；
+ *   之后自由倾斜 30°→放平，从 10Hz 三列输出目测/读视频回稳快慢。
+ * 180 s 自动退出，也可 x 提前退出。
+ * ========================================================================== */
+void test_imu_alpha_cmp()
+{
+    if (!imu_init()) {
+        ESP_LOGE(TAG, "初始化失败");
+        imu_deinit();
+        return;
+    }
+    ESP_LOGI(TAG, "静置校准中(约 1.5s)...");
+    if (!imu_calibrate(CAL_SAMPLES)) {
+        ESP_LOGE(TAG, "校准失败");
+        imu_deinit();
+        return;
+    }
+
+    float bias[3];
+    imu_get_bias(bias);
+    ImuAttitude a_lo = {};   // α=0.5
+    ImuAttitude a_hi = {};   // α=0.999
+    // α=0.98 由驱动内部状态(imu_update)维护
+
+    struct Range { float mn, mx; };
+    Range r[3] = {{1e9f, -1e9f}, {1e9f, -1e9f}, {1e9f, -1e9f}};  // 0.5 / 0.98 / 0.999
+
+    const int64_t start_us = esp_timer_get_time();
+    int64_t last_us = start_us;
+    uint32_t n = 0;
+    bool summary_done = false;
+
+    ESP_LOGI(TAG, "前 30 s 静置别碰；之后倾斜 30°→放平，观察三列回稳");
+    while (!test_should_abort()) {
+        const int64_t now_us = esp_timer_get_time();
+        float dt = static_cast<float>(now_us - last_us) * 1e-6f;
+        last_us = now_us;
+        if (dt <= 0.0f || dt > 0.2f) dt = PERIOD_MS / 1000.0f;
+
+        imu_update(dt);                            // α=0.98
+        const ImuRaw& raw = imu_raw();
+        imu_filter_step(raw, bias, dt, 0.5f, a_lo);
+        imu_filter_step(raw, bias, dt, 0.999f, a_hi);
+        const ImuAttitude& a_mid = imu_attitude();
+
+        if (!summary_done) {                       // 静置窗口内累计三档极值
+            const ImuAttitude* st[3] = {&a_lo, &a_mid, &a_hi};
+            for (int k = 0; k < 3; ++k) {
+                float v[2] = {st[k]->pitch, st[k]->roll};
+                for (float x : v) {
+                    if (x < r[k].mn) r[k].mn = x;
+                    if (x > r[k].mx) r[k].mx = x;
+                }
+            }
+        }
+
+        int elapsed_s = static_cast<int>((now_us - start_us) / 1000000);
+        if (!summary_done && elapsed_s >= 30) {
+            summary_done = true;
+            ESP_LOGW(TAG, "★ 静置30s峰峰: α0.5=%.2f° | α0.98=%.2f° | α0.999=%.2f°",
+                     r[0].mx - r[0].mn, r[1].mx - r[1].mn, r[2].mx - r[2].mn);
+        }
+        if (++n % LOG_EVERY == 0) {
+            ESP_LOGI(TAG, "α0.5 p=%6.1f r=%6.1f | α0.98 p=%6.1f r=%6.1f | α0.999 p=%6.1f r=%6.1f",
+                     a_lo.pitch, a_lo.roll, a_mid.pitch, a_mid.roll, a_hi.pitch, a_hi.roll);
+        }
+        if (elapsed_s >= 180) {
+            ESP_LOGI(TAG, "180 s 到");
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(PERIOD_MS));
+    }
+    imu_deinit();
+    ESP_LOGI(TAG, "α 三档对比结束，★峰峰行与回稳观察记入 G05_α三档对比");
+}
