@@ -203,15 +203,29 @@ void test_imu_alpha_cmp()
     ImuAttitude a_hi = {};   // α=0.999
     // α=0.98 由驱动内部状态(imu_update)维护
 
+    // 消除"从 0 收敛到真实角"的暂态污染：用 α=0（纯加速度计一步到位）播种两档新状态
+    ImuRaw seed;
+    if (imu_read_raw(seed)) {
+        imu_filter_step(seed, bias, 0.01f, 0.0f, a_lo);
+        imu_filter_step(seed, bias, 0.01f, 0.0f, a_hi);
+    }
+    // 平放检查：|ax|、|ay| 应接近 0，|az| 接近 1
+    if (fabsf(seed.ax) > 0.15f || fabsf(fabsf(seed.az) - 1.0f) > 0.15f) {
+        ESP_LOGW(TAG, "⚠ 模块疑似未平放(ax=%.2f az=%.2f)——峰峰测量要求平放静止，请摆正后重进本项",
+                 seed.ax, seed.az);
+    }
+
     struct Range { float mn, mx; };
-    Range r[3] = {{1e9f, -1e9f}, {1e9f, -1e9f}, {1e9f, -1e9f}};  // 0.5 / 0.98 / 0.999
+    Range r[3][2] = { {{1e9f, -1e9f}, {1e9f, -1e9f}},   // α=0.5:  pitch / roll
+                      {{1e9f, -1e9f}, {1e9f, -1e9f}},   // α=0.98
+                      {{1e9f, -1e9f}, {1e9f, -1e9f}} }; // α=0.999
 
     const int64_t start_us = esp_timer_get_time();
     int64_t last_us = start_us;
     uint32_t n = 0;
     bool summary_done = false;
 
-    ESP_LOGI(TAG, "前 30 s 静置别碰；之后倾斜 30°→放平，观察三列回稳");
+    ESP_LOGI(TAG, "静置窗口=校准后第 5~35 s（前 5 s 留给 α0.98 收敛），期间别碰；之后倾斜 30°→放平看三列回稳");
     while (!test_should_abort()) {
         const int64_t now_us = esp_timer_get_time();
         float dt = static_cast<float>(now_us - last_us) * 1e-6f;
@@ -224,22 +238,22 @@ void test_imu_alpha_cmp()
         imu_filter_step(raw, bias, dt, 0.999f, a_hi);
         const ImuAttitude& a_mid = imu_attitude();
 
-        if (!summary_done) {                       // 静置窗口内累计三档极值
+        int elapsed_s = static_cast<int>((now_us - start_us) / 1000000);
+        if (!summary_done && elapsed_s >= 5 && elapsed_s <= 35) {   // pitch/roll 分开累计
             const ImuAttitude* st[3] = {&a_lo, &a_mid, &a_hi};
             for (int k = 0; k < 3; ++k) {
-                float v[2] = {st[k]->pitch, st[k]->roll};
-                for (float x : v) {
-                    if (x < r[k].mn) r[k].mn = x;
-                    if (x > r[k].mx) r[k].mx = x;
-                }
+                if (st[k]->pitch < r[k][0].mn) r[k][0].mn = st[k]->pitch;
+                if (st[k]->pitch > r[k][0].mx) r[k][0].mx = st[k]->pitch;
+                if (st[k]->roll  < r[k][1].mn) r[k][1].mn = st[k]->roll;
+                if (st[k]->roll  > r[k][1].mx) r[k][1].mx = st[k]->roll;
             }
         }
-
-        int elapsed_s = static_cast<int>((now_us - start_us) / 1000000);
-        if (!summary_done && elapsed_s >= 30) {
+        if (!summary_done && elapsed_s > 35) {
             summary_done = true;
-            ESP_LOGW(TAG, "★ 静置30s峰峰: α0.5=%.2f° | α0.98=%.2f° | α0.999=%.2f°",
-                     r[0].mx - r[0].mn, r[1].mx - r[1].mn, r[2].mx - r[2].mn);
+            ESP_LOGW(TAG, "★ 静置30s峰峰(5~35s): α0.5 p=%.2f r=%.2f | α0.98 p=%.2f r=%.2f | α0.999 p=%.2f r=%.2f",
+                     r[0][0].mx - r[0][0].mn, r[0][1].mx - r[0][1].mn,
+                     r[1][0].mx - r[1][0].mn, r[1][1].mx - r[1][1].mn,
+                     r[2][0].mx - r[2][0].mn, r[2][1].mx - r[2][1].mn);
         }
         if (++n % LOG_EVERY == 0) {
             ESP_LOGI(TAG, "α0.5 p=%6.1f r=%6.1f | α0.98 p=%6.1f r=%6.1f | α0.999 p=%6.1f r=%6.1f",
