@@ -41,8 +41,11 @@ static constexpr uint8_t REG_PWR_MGMT_1 = 0x6B;  // 写 0x00 退出睡眠
 static constexpr uint8_t REG_ACCEL_XOUT_H = 0x3B;
 static constexpr int     RAW_FRAME_LEN  = 14;    // ax ay az t gx gy gz
 
-/* ---------------- 轴映射（装法不同只改这里） ---------------- */
-static const ImuAxisMap AXIS_MAP = IMU_AXIS_IDENTITY;
+/* ---------------- 轴映射（装法不同只改这里，解算公式不动——1.22 纪律） ----------------
+ * 台架物理约束：GY-521 排针在板边，芯片朝上放=引脚顶桌面，放不稳 → 实测只能芯片朝下。
+ * 芯片朝下 = 相对"芯片朝上"绕 X 轴转了 180° → 车体系 y、z 两轴对芯片轴取反。
+ * 上车载入 PCB 后，按实际安装朝向重新推导这张表（三问验证法见 imu_driver.h）。 */
+static const ImuAxisMap AXIS_MAP = {{0, 1, 2}, {+1.0f, -1.0f, -1.0f}};
 
 /* ---------------- 句柄与状态（生命周期 = imu_init ~ imu_deinit） ---------------- */
 static i2c_master_bus_handle_t s_bus = nullptr;
