@@ -3,8 +3,8 @@
  * ==========================================================================
  * 【接线契约】
  *   SDA=GPIO1 / SCL=GPIO2（《实验手册2》A1 引脚表，导出即冻结）
- *   上板后由板载 4.7 kΩ 承担上拉；台架阶段临时开启内部上拉，且只允许这一处上拉
- *   ——模块自带 4.7 kΩ 时不要并联第二处，否则边沿异常、随机 NACK
+ *   上拉只一处：模块自带 2.2 kΩ（丝印 222×2，2026-11-11 实拍确认），内部上拉已关闭
+ *   ——并联第二处上拉会拉低高电平、加快边沿但改时序余量，评审口径按 2.2k 记
  *
  * 【两个常见症状的根因】
  *   读回 0x00 / 0xFF  → 接线或供电（不是"传感器坏了"）
@@ -97,7 +97,8 @@ bool imu_init()
     bus_cfg.scl_io_num = PIN_SCL;
     bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
     bus_cfg.glitch_ignore_cnt = 7;             // 典型值, 滤掉毛刺
-    bus_cfg.flags.enable_internal_pullup = true;  // 台架临时；上板后由板载 4.7k 承担
+    // 模块自带 2.2kΩ 上拉(丝印222, 2026-11-11 实拍确认), "上拉只一处"纪律 → 内部上拉关闭
+    bus_cfg.flags.enable_internal_pullup = false;
     esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
     if (err != ESP_OK) {
         s_bus = nullptr;
@@ -212,4 +213,29 @@ void imu_get_bias(float out[3])
     out[0] = s_bias[0];
     out[1] = s_bias[1];
     out[2] = s_bias[2];
+}
+
+/* -------------------------------------------------------------------------- */
+/* 诊断辅助（2026-11-11 增）：只调用既有 read/write，不改任何状态机            */
+/* -------------------------------------------------------------------------- */
+int imu_whoami_sweep(int n)
+{
+    if (n <= 0) return -1;
+    int fail = 0;
+    uint8_t id;
+    for (int i = 0; i < n; ++i) {
+        if (!read_reg(REG_WHO_AM_I, &id, 1) || id != 0x68) ++fail;
+    }
+    return fail;
+}
+
+bool imu_sleep_wake_demo(uint8_t out_sleep[2], uint8_t out_wake[2])
+{
+    if (!write_reg(REG_PWR_MGMT_1, 0x40)) return false;   // 强制睡眠
+    vTaskDelay(pdMS_TO_TICKS(10));
+    bool ok = read_reg(REG_ACCEL_XOUT_H, out_sleep, 2);
+    if (!write_reg(REG_PWR_MGMT_1, 0x00)) return false;   // 唤醒
+    vTaskDelay(pdMS_TO_TICKS(50));                        // 退出睡眠到首帧有效
+    ok = ok && read_reg(REG_ACCEL_XOUT_H, out_wake, 2);
+    return ok;
 }

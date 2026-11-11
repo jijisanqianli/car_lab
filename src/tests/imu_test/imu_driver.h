@@ -53,3 +53,13 @@ bool imu_update(float dt_s);
 
 const ImuAttitude& imu_attitude();          // 当前姿态
 void imu_get_bias(float out[3]);            // 当前零偏 °/s（未校准时全 0）
+
+/* ---------------- 诊断辅助（2026-11-11 增，只增不改既有逻辑） ---------------- */
+
+/* 连读 WHO_AM_I n 次，返回失败次数（采集单"连读100次"格用）；n<=0 返回 -1 */
+int imu_whoami_sweep(int n);
+
+/* 强制睡眠/唤醒演示: 写 PWR_MGMT_1=0x40 睡眠 → 读 ACCEL_XOUT 两字节(应 0x00)
+ * → 写回 0x00 唤醒 → 再读两字节(应非零)。out_sleep/out_wake 带回读数。
+ * 返回 false 表示 I2C 出错。演示结束器件处于唤醒态。 */
+bool imu_sleep_wake_demo(uint8_t out_sleep[2], uint8_t out_wake[2]);

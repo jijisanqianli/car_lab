@@ -8,8 +8,8 @@
  *
  * 【台架要求】
  *   □ SDA→GPIO1, SCL→GPIO2, GND 必须与开发板共地
- *   □ 上拉只一处: 模块自带 4.7k 时不要再并联(内部上拉此时是临时手段)
- *   □ AD0 悬空(=0x68); 拉高会变 0x69
+ *   □ 上拉只一处: 模块自带 2.2k（丝印222），代码内部上拉已关，不要再并联
+ *   □ AD0: 本模块经 4.7k 板载下拉 → 默认 0x68（等效"悬空=低"）
  *   □ 校准与观察期间桌面不许碰 —— 手碰桌子 = 零偏里混进振动
  *   □ 上电先预热 3~5 分钟再校准: 零偏随温度漂, 冷机校出来的 bias 会一直偏
  *
@@ -23,6 +23,7 @@
  * ========================================================================== */
 #include "esp_log.h"
 #include "esp_timer.h"
+#include <cmath>   // sqrtf（诊断3 重力模长）
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -37,12 +38,32 @@ static constexpr int CAL_SAMPLES   = 1000;
 
 void test_imu_attitude()
 {
-    ESP_LOGI(TAG, "接线三查: 上拉(只一处) / 线长(尽量短) / AD0 悬空=0x68");
+    ESP_LOGI(TAG, "接线三查: 上拉(模块2.2k只一处) / 线长(尽量短) / AD0 板载下拉=0x68");
 
     if (!imu_init()) {
         ESP_LOGE(TAG, "初始化失败, 见上方日志");
         imu_deinit();          // 必须: 否则下一轮 i2c_new_master_bus 报 INVALID_STATE
         return;
+    }
+
+    // ---- 诊断三连（2026-11-11 增，对应采集单 §二【驱动验证】三格）----
+    int who_fail = imu_whoami_sweep(100);
+    ESP_LOGI(TAG, "[诊断1] WHO_AM_I 连读 100 次: 失败 %d 次（0 才算稳）", who_fail);
+
+    uint8_t slp[2] = {0}, wake[2] = {0};
+    if (imu_sleep_wake_demo(slp, wake)) {
+        ESP_LOGI(TAG, "[诊断2] 唤醒前 ACCEL_XOUT_H 两字节 = 0x%02X 0x%02X（应全0）"
+                      " / 唤醒后 = 0x%02X 0x%02X（应非零）",
+                 slp[0], slp[1], wake[0], wake[1]);
+    } else {
+        ESP_LOGE(TAG, "[诊断2] 睡眠/唤醒演示 I2C 出错");
+    }
+
+    ImuRaw g;
+    if (imu_read_raw(g)) {
+        float norm = sqrtf(g.ax * g.ax + g.ay * g.ay + g.az * g.az);
+        ESP_LOGI(TAG, "[诊断3] 静置加速度 ax=%.3f ay=%.3f az=%.3f g → 模长=%.3f g（应≈1.00，>5%% 查系数）",
+                 g.ax, g.ay, g.az, norm);
     }
 
     ESP_LOGI(TAG, "静置校准中(约 1.5s), 手离开桌面...");
