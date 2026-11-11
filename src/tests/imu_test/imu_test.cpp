@@ -35,6 +35,8 @@ static const char* TAG = "imu-test";
 static constexpr int PERIOD_MS     = 10;    // 100 Hz = tick 率 100Hz 下的 1 tick
 static constexpr int LOG_EVERY     = 10;    // 10 Hz 打印, 避免刷屏
 static constexpr int CAL_SAMPLES   = 1000;
+static constexpr int DRIFT_TOTAL_S = 600;   // 漂移会话总时长: 10 分钟
+static constexpr int DRIFT_MARK_S  = 120;   // ★记录点间隔: 2 分钟
 
 void test_imu_attitude()
 {
@@ -113,32 +115,35 @@ void test_imu_attitude()
 }
 
 /* ============================================================================
- * 测试项: IMU 漂移演示·不校准（1.23 校准前漂移的观测窗口）
- * ==========================================================================
- * 与"IMU 姿态"项唯一的区别: **跳过校准**，让零偏直接进积分器——
- * yaw 单调漂移是被测现象，不是故障。平放挂机 10 分钟，每 2 分钟自动打一条
- * ★ 记录点（共 6 条），到 10 分钟自动退出；中途按 x 也可退出（记录点作废）。
- * 用法: 本项跑完抄 6 点(校准前) → 再跑"IMU 姿态"项(带校准)挂机 10 分钟
- *       抄同样 6 点(校准后) → 两组进采集单【yaw 漂移】格。
+ * 漂移测量会话（第 9/10 项共用）：10 分钟挂机，每 2 分钟一条★记录点，自动退出
+ *   calibrate=false → 校准前组（零偏全额进积分，漂得快）
+ *   calibrate=true  → 校准后组（残差+温漂，漂得慢——"校准值多少钱"的另一半）
+ * 记录时刻以"进入循环"为 t0（校准后组即校准完成时刻），与第 8 项交互演示互不干扰。
  * ========================================================================== */
-static constexpr int DRIFT_TOTAL_S = 600;   // 10 分钟
-static constexpr int DRIFT_MARK_S  = 120;   // 每 2 分钟一个记录点
-
-void test_imu_drift()
+static void drift_session(const char* label, bool calibrate)
 {
     if (!imu_init()) {
         ESP_LOGE(TAG, "初始化失败, 见上方日志");
         imu_deinit();
         return;
     }
-    ESP_LOGW(TAG, "漂移演示: 本项【不校准】，零偏直接进积分——yaw 漂是被测现象");
-    ESP_LOGI(TAG, "平放挂机 %d 分钟，每 %d 分钟一条★记录点，到点自动退出",
-             DRIFT_TOTAL_S / 60, DRIFT_MARK_S / 60);
+    if (calibrate) {
+        ESP_LOGI(TAG, "[%s] 静置校准中(约 1.5s), 手离开桌面...", label);
+        if (!imu_calibrate(CAL_SAMPLES)) {
+            ESP_LOGE(TAG, "[%s] 校准失败(采样期间 I2C 出错)", label);
+            imu_deinit();
+            return;
+        }
+    } else {
+        ESP_LOGW(TAG, "[%s] 本项【不校准】，零偏直接进积分——yaw 漂是被测现象", label);
+    }
+    ESP_LOGI(TAG, "[%s] 平放挂机 %d 分钟，每 %d 分钟一条★记录点，到点自动退出",
+             label, DRIFT_TOTAL_S / 60, DRIFT_MARK_S / 60);
 
     TickType_t last_wake = xTaskGetTickCount();
     const int64_t start_us = esp_timer_get_time();
     int64_t last_us = start_us;
-    int next_mark = DRIFT_MARK_S;   // 普通局部变量: 每次进入演示都从 2min 重新计
+    int next_mark = DRIFT_MARK_S;   // 普通局部变量: 每次进入从 2min 重新计
 
     while (!test_should_abort()) {
         const int64_t now_us = esp_timer_get_time();
@@ -151,17 +156,20 @@ void test_imu_drift()
         int elapsed_s = static_cast<int>((now_us - start_us) / 1000000);
         if (elapsed_s >= next_mark) {
             const ImuAttitude& a = imu_attitude();
-            ESP_LOGI(TAG, "★ 记录点 t=%ds: pitch=%.1f roll=%.1f yaw=%.1f",
-                     next_mark, a.pitch, a.roll, a.yaw);
+            ESP_LOGI(TAG, "★ 记录点(%s) t=%ds: pitch=%.1f roll=%.1f yaw=%.1f",
+                     label, next_mark, a.pitch, a.roll, a.yaw);
             next_mark += DRIFT_MARK_S;
         }
         if (elapsed_s >= DRIFT_TOTAL_S) {
-            ESP_LOGI(TAG, "10 分钟到，6 个记录点已齐");
+            ESP_LOGI(TAG, "[%s] 10 分钟到，6 个记录点已齐", label);
             break;
         }
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(PERIOD_MS));
     }
 
     imu_deinit();
-    ESP_LOGI(TAG, "漂移演示结束，返回菜单");
+    ESP_LOGI(TAG, "[%s] 漂移测量结束，返回菜单", label);
 }
+
+void test_imu_drift()      { drift_session("校准前", false); }
+void test_imu_drift_cal()  { drift_session("校准后", true); }
