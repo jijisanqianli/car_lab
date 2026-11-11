@@ -129,6 +129,14 @@ bool imu_init()
         return false;
     }
 
+    // ---- 冷启动证据（2026-11-11 用户批准增）：唤醒前读一次加速度寄存器 ----
+    // 上电后首跑：器件处于 POR 睡眠态，寄存器=复位值 → 应读到 0x00 0x00
+    // 同一上电周期的第二次跑：器件已被上一轮唤醒过，读到的是残值（SLEEP 保持寄存器）
+    uint8_t pre[2] = {0xFF, 0xFF};
+    read_reg(REG_ACCEL_XOUT_H, pre, 2);
+    ESP_LOGI(TAG, "唤醒前(写0x6B之前) ACCEL_XOUT_H = 0x%02X 0x%02X"
+                  "（上电首跑应 0x00 0x00，重跑读到残值属正常）", pre[0], pre[1]);
+
     // ---- ④ 唤醒: 漏这步数据全零 ----
     if (!write_reg(REG_PWR_MGMT_1, 0x00)) return false;
     vTaskDelay(pdMS_TO_TICKS(50));   // 退出睡眠到第一帧有效数据
@@ -207,6 +215,8 @@ bool imu_update(float dt_s)
 }
 
 const ImuAttitude& imu_attitude() { return s_att; }
+
+const ImuRaw& imu_raw() { return s_raw; }
 
 void imu_get_bias(float out[3])
 {

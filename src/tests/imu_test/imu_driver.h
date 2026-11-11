@@ -53,6 +53,7 @@ bool imu_update(float dt_s);
 
 const ImuAttitude& imu_attitude();          // 当前姿态
 void imu_get_bias(float out[3]);            // 当前零偏 °/s（未校准时全 0）
+const ImuRaw& imu_raw();                    // 最近一帧原始物理量（1.17 猛拍峰值用）
 
 /* ---------------- 诊断辅助（2026-11-11 增，只增不改既有逻辑） ---------------- */
 

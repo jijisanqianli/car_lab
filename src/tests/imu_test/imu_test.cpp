@@ -52,8 +52,10 @@ void test_imu_attitude()
 
     uint8_t slp[2] = {0}, wake[2] = {0};
     if (imu_sleep_wake_demo(slp, wake)) {
-        ESP_LOGI(TAG, "[诊断2] 唤醒前 ACCEL_XOUT_H 两字节 = 0x%02X 0x%02X（应全0）"
-                      " / 唤醒后 = 0x%02X 0x%02X（应非零）",
+        // 注: 本演示在 init 之后, 器件已醒过 → 睡前读到的是残值(与诊断3 ax 吻合即自洽)
+        //     "全 0"只有冷上电首读才成立, 证据看 imu 标签的"唤醒前(写0x6B之前)"行
+        ESP_LOGI(TAG, "[诊断2] 中途强制睡眠前/后 ACCEL_XOUT_H = 0x%02X 0x%02X / 0x%02X 0x%02X"
+                      "（睡前读到残值=机制正常, 非故障）",
                  slp[0], slp[1], wake[0], wake[1]);
     } else {
         ESP_LOGE(TAG, "[诊断2] 睡眠/唤醒演示 I2C 出错");
@@ -80,6 +82,7 @@ void test_imu_attitude()
     int64_t    last_us   = esp_timer_get_time();
     uint32_t   n = 0;
     uint32_t   err_cnt = 0;
+    float      a_peak = 0.0f;   // 1.17 猛拍桌面：静置后最大 |加速度|（g）
 
     while (!test_should_abort()) {
         // 真实间隔积分: 固定 dt 在任务被抢占时会让 yaw 累积错误
@@ -88,12 +91,18 @@ void test_imu_attitude()
         last_us = now_us;
         if (dt <= 0.0f || dt > 0.2f) dt = PERIOD_MS / 1000.0f;   // 异常值兜底
 
-        if (!imu_update(dt)) ++err_cnt;
+        if (imu_update(dt)) {
+            const ImuRaw& r = imu_raw();
+            float m = fmaxf(fmaxf(fabsf(r.ax), fabsf(r.ay)), fabsf(r.az));
+            if (m > a_peak) a_peak = m;
+        } else {
+            ++err_cnt;
+        }
 
         if (++n % LOG_EVERY == 0) {
             const ImuAttitude& a = imu_attitude();
-            ESP_LOGI(TAG, "pitch=%6.1f  roll=%6.1f  yaw=%7.1f  dt=%.3fs  读错=%lu",
-                     a.pitch, a.roll, a.yaw, dt, static_cast<unsigned long>(err_cnt));
+            ESP_LOGI(TAG, "pitch=%6.1f  roll=%6.1f  yaw=%7.1f  dt=%.3fs  读错=%lu  峰值=%.2fg",
+                     a.pitch, a.roll, a.yaw, dt, static_cast<unsigned long>(err_cnt), a_peak);
         }
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(PERIOD_MS));
@@ -101,4 +110,58 @@ void test_imu_attitude()
 
     imu_deinit();   // 摘设备 → 删总线 → 句柄置空
     ESP_LOGI(TAG, "已释放 I2C 总线, 返回菜单");
+}
+
+/* ============================================================================
+ * 测试项: IMU 漂移演示·不校准（1.23 校准前漂移的观测窗口）
+ * ==========================================================================
+ * 与"IMU 姿态"项唯一的区别: **跳过校准**，让零偏直接进积分器——
+ * yaw 单调漂移是被测现象，不是故障。平放挂机 10 分钟，每 2 分钟自动打一条
+ * ★ 记录点（共 6 条），到 10 分钟自动退出；中途按 x 也可退出（记录点作废）。
+ * 用法: 本项跑完抄 6 点(校准前) → 再跑"IMU 姿态"项(带校准)挂机 10 分钟
+ *       抄同样 6 点(校准后) → 两组进采集单【yaw 漂移】格。
+ * ========================================================================== */
+static constexpr int DRIFT_TOTAL_S = 600;   // 10 分钟
+static constexpr int DRIFT_MARK_S  = 120;   // 每 2 分钟一个记录点
+
+void test_imu_drift()
+{
+    if (!imu_init()) {
+        ESP_LOGE(TAG, "初始化失败, 见上方日志");
+        imu_deinit();
+        return;
+    }
+    ESP_LOGW(TAG, "漂移演示: 本项【不校准】，零偏直接进积分——yaw 漂是被测现象");
+    ESP_LOGI(TAG, "平放挂机 %d 分钟，每 %d 分钟一条★记录点，到点自动退出",
+             DRIFT_TOTAL_S / 60, DRIFT_MARK_S / 60);
+
+    TickType_t last_wake = xTaskGetTickCount();
+    const int64_t start_us = esp_timer_get_time();
+    int64_t last_us = start_us;
+    int next_mark = DRIFT_MARK_S;   // 普通局部变量: 每次进入演示都从 2min 重新计
+
+    while (!test_should_abort()) {
+        const int64_t now_us = esp_timer_get_time();
+        float dt = static_cast<float>(now_us - last_us) * 1e-6f;
+        last_us = now_us;
+        if (dt <= 0.0f || dt > 0.2f) dt = PERIOD_MS / 1000.0f;
+
+        imu_update(dt);
+
+        int elapsed_s = static_cast<int>((now_us - start_us) / 1000000);
+        if (elapsed_s >= next_mark) {
+            const ImuAttitude& a = imu_attitude();
+            ESP_LOGI(TAG, "★ 记录点 t=%ds: pitch=%.1f roll=%.1f yaw=%.1f",
+                     next_mark, a.pitch, a.roll, a.yaw);
+            next_mark += DRIFT_MARK_S;
+        }
+        if (elapsed_s >= DRIFT_TOTAL_S) {
+            ESP_LOGI(TAG, "10 分钟到，6 个记录点已齐");
+            break;
+        }
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(PERIOD_MS));
+    }
+
+    imu_deinit();
+    ESP_LOGI(TAG, "漂移演示结束，返回菜单");
 }
